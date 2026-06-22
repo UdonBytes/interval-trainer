@@ -378,13 +378,19 @@ function MusicNote({ x, y, accidental, color, draggable, onPointerDown }) {
 }
 
 function SpelledMusicNote({ x, y, accidental, color, draggable, onPointerDown }) {
-  const accidentalLayout = {
+  const baseAccidentalLayout = {
     b: { x: -48, y: 8, size: 45 },
     '#': { x: -49, y: 14, size: 42 },
     natural: { x: -49, y: 15, size: 49 },
     bb: { x: -54, y: 8, size: 42 },
   }[accidental] ?? { x: -48, y: 10, size: 45 };
+  // The pink student note gets extra horizontal breathing room for accidentals
+  // and a larger invisible target so small fingers can tap/drag beside the notehead.
+  const accidentalLayout = draggable
+    ? { ...baseAccidentalLayout, x: baseAccidentalLayout.x - 11 }
+    : baseAccidentalLayout;
   return <g className={draggable ? 'drag-note' : ''} onPointerDown={onPointerDown}>
+    {draggable && <rect x={x - 64} y={y - 52} width="188" height="104" rx="30" fill="transparent" pointerEvents="all" />}
     {accidental && <text x={x + accidentalLayout.x} y={y + accidentalLayout.y} className="accidental" style={{ fontSize: accidentalLayout.size }} fill={color}>{accidentalSymbol(accidental)}</text>}
     <ellipse cx={x} cy={y} rx="18.5" ry="13.2" transform={`rotate(-14 ${x} ${y})`} fill={color} />
   </g>;
@@ -473,9 +479,12 @@ function App() {
   const [rcmLevel, setRcmLevel] = useState('Custom');
   const [rcmOpen, setRcmOpen] = useState(false);
   const rcmDropdownRef = useRef(null);
-  const [intervalPanelOpen, setIntervalPanelOpen] = useState(() =>
-    typeof window !== 'undefined' && window.sessionStorage.getItem('intervalPanelOpen') === 'true'
-  );
+  const [intervalPanelOpen, setIntervalPanelOpen] = useState(() => {
+    if (typeof window === 'undefined') return true;
+    const saved = window.sessionStorage.getItem('intervalPanelOpen');
+    if (saved !== null) return saved === 'true';
+    return !window.matchMedia('(max-width: 700px)').matches;
+  });
   const [anchorPitch, setAnchorPitch] = useState('C4');
   const eligible = useMemo(() => INTERVALS.filter((interval) => selectedIntervals.has(interval.id)), [selectedIntervals]);
   const fullNaturalPitches = useMemo(() => naturalLadderFromAnchor(anchorPitch), [anchorPitch]);
@@ -702,7 +711,7 @@ function App() {
         <button className="soft" disabled={!audioReady || !eligible.length} onClick={() => { setShowingAnswer(true); setFeedback({ kind: 'answer', text: `The answer is ${answer.note} — ${answer.name}. Give it a listen!` }); safelyPlay(() => playPair(anchorPitch, answer.samplePitch)); }}>👀 Show Answer</button>
         <button className="next" disabled={!audioReady} onClick={() => eligible.length ? chooseNext() : (resetGuess(), setFeedback({ kind: 'ready', text: FREE_LISTENING_TEXT }))}>Next <span>→</span></button>
       </div>
-    </section><footer>Tip: you can also use the ↑ ↓ keys.<br />Created by Jane Hong (UdonBytes)</footer>
+    </section><footer><span className="footer-tip">Tip: you can also use the ↑ ↓ keys.</span><span className="footer-credit">Created by Jane Hong (UdonBytes)</span></footer>
   </main>;
 }
 

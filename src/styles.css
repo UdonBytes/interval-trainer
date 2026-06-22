@@ -43,7 +43,8 @@ button:disabled{cursor:wait;opacity:.55;transform:none!important}
 .anchor-stepper b{min-width:24px;text-align:center;color:#65558f;font:700 13px 'Fredoka'}
 .anchor-stepper button{padding:2px 7px;border-radius:999px;background:#f1ecf4;color:#65558f;box-shadow:none}
 .anchor-stepper button:hover,.anchor-stepper button:focus-visible{background:#e7def0;transform:none}
-.interval-grid{display:grid;grid-template-columns:repeat(9,minmax(70px,1fr));gap:5px;overflow-x:auto;padding:1px 1px 3px;scrollbar-width:thin}
+.interval-grid{display:none;grid-template-columns:repeat(9,minmax(70px,1fr));gap:5px;overflow-x:auto;padding:1px 1px 3px;scrollbar-width:thin}
+.interval-grid.is-open{display:grid}
 .interval-column{display:flex;flex-direction:column;gap:3px;min-width:0;padding:4px;background:#fff;border:1px solid #e9dfea;border-radius:10px;text-align:center}
 .interval-column.special{background:#fff9e9;border-color:#eddfb3}
 .interval-column>strong{font:600 10px 'Fredoka';color:#75687e;white-space:nowrap}
@@ -70,8 +71,13 @@ button:disabled{cursor:wait;opacity:.55;transform:none!important}
 html,body{overflow-x:hidden}
 .app-shell,.game-card,.notation-area,.settings-panel{-webkit-user-select:none;user-select:none}
 .rcm-select select{user-select:auto}
-.choose-intervals{display:none}
+.choose-intervals{display:block;flex:0 0 auto;margin:0;padding:6px 10px;background:#f1ecf4;color:#665773;border:1px solid #e4d9e9;border-radius:999px;font-size:11px;box-shadow:none}
+.choose-intervals[aria-expanded=true]{background:#65558f;color:#fff;border-color:#65558f}
+.choose-intervals:hover,.choose-intervals:focus-visible{transform:none;filter:none;background:#e9e2ef}
 .helper-mobile{display:none!important}
+footer span{display:block;color:inherit}
+footer .footer-tip{color:#988e9b}
+footer .footer-credit{color:#988e9b}
 
 @media(max-width:700px){
   .app-shell{width:min(100% - 10px,620px);padding-top:5px;padding-bottom:4px}
@@ -114,6 +120,7 @@ html,body{overflow-x:hidden}
   .actions button{padding:8px 6px;font-size:11px;border-radius:10px}
   .flat-toggle{bottom:4px}
   footer{display:block;font-size:9.5px;line-height:1.15;padding-top:4px}
+  footer .footer-tip{display:none}
 }
 
 /* Roomier notation box so note labels and the flat button never clip at the bottom. */
