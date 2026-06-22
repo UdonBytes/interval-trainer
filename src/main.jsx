@@ -565,7 +565,7 @@ function App() {
     const nextPool = alternatives.length ? alternatives : choices;
     const next = nextPool[Math.floor(Math.random() * nextPool.length)];
     setAnswerInterval(next); resetGuess(nextAnchor); setShowingAnswer(false);
-    setFeedback({ kind: 'ready', text: 'New mystery note! Tap Play Again when you are ready.' });
+    setFeedback({ kind: 'ready', text: 'New mystery note! Tap Play when you are ready.' });
   };
   const changeAnchor = (direction) => {
     const currentIndex = STARTING_NOTES.indexOf(anchorPitch);
@@ -688,7 +688,7 @@ function App() {
           })}
         </div>
       </div>
-      <div className="listen-row"><div className="step-badge">1</div><div><b>Listen, then find the 2nd note</b><small className="helper-desktop">Start with the regular note. If it sounds a little lower, use Lower this note.</small><small className="helper-mobile">Find the regular note first. Lower if needed.</small></div><button className="primary play" disabled={!audioReady || !eligible.length} onClick={() => safelyPlay(() => playPair(anchorPitch, answer.samplePitch))}><span>▶</span> Play Again</button></div>
+      <div className="listen-row"><div className="step-badge">1</div><div><b>Listen, then find the 2nd note</b><small className="helper-desktop">Start with the regular note. If it sounds a little lower, use Lower this note.</small><small className="helper-mobile">Find the regular note first. Lower if needed.</small></div><button className="primary play" disabled={!audioReady || !eligible.length} onClick={() => safelyPlay(() => playPair(anchorPitch, answer.samplePitch))}><span>▶</span> Play</button></div>
       <div className="notation-area" tabIndex="0" onKeyDown={handleKeyDown} aria-label="Natural note ladder. Use up and down arrow keys to move your note.">
         <Staff anchorPitch={anchorPitch} naturalPitches={naturalPitches} guess={guess} flatOn={flatOn} setGuess={chooseNaturalNote} playCue={playCue}
           playAnchor={() => playCue(anchorPitch)} playStudent={() => playCue(spellingForSelection(anchorPitch, guess, flatOn).samplePitch)}
