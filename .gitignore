@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.pnpm-store/
+piano_samples/
+_tmp_*
+.DS_Store
+*.local
