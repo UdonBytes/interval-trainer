@@ -73,6 +73,8 @@ let previewGain;
 let previewRequest = 0;
 let sequenceVoices = [];
 let sequenceRequest = 0;
+let audioWarmPromise;
+let audioWarmed = false;
 
 function getAudioContext() {
   audioContext ||= new (window.AudioContext || window.webkitAudioContext)();
@@ -134,7 +136,32 @@ async function unlockAudio() {
   // resume() must begin inside the pointer/key gesture; awaiting preload first loses activation.
   const resume = context.state === 'suspended' ? context.resume() : Promise.resolve();
   await Promise.all([preloadPianoSamples(), resume]);
+  if (context.state !== 'running') await context.resume();
+  await warmAudioContext(context);
   return context;
+}
+
+function warmAudioContext(context) {
+  if (audioWarmed && context.state === 'running') return Promise.resolve();
+  if (audioWarmPromise) return audioWarmPromise;
+  audioWarmPromise = new Promise((resolve) => {
+    const buffer = context.createBuffer(1, 1, context.sampleRate);
+    const source = context.createBufferSource();
+    const gain = context.createGain();
+    source.buffer = buffer;
+    gain.gain.setValueAtTime(0, context.currentTime);
+    source.connect(gain).connect(context.destination);
+    source.onended = () => {
+      source.disconnect();
+      gain.disconnect();
+      audioWarmed = true;
+      audioWarmPromise = undefined;
+      resolve();
+    };
+    source.start(context.currentTime);
+    source.stop(context.currentTime + .001);
+  });
+  return audioWarmPromise;
 }
 
 function startSample(context, pitch, startTime, volume = .72, duration) {
@@ -160,7 +187,7 @@ async function playPreviewSample(pitch) {
   cancelSequence();
   const context = await unlockAudio();
   if (request !== previewRequest) return;
-  const voice = startSample(context, pitch, context.currentTime, .58, .84);
+  const voice = startSample(context, pitch, context.currentTime + .01, .58, .84);
   previewSource = voice.source;
   previewGain = voice.gain;
   previewSource.onended = () => {
@@ -174,7 +201,9 @@ async function playPair(anchorPitch, secondPitch) {
   cancelPreview();
   const context = await unlockAudio();
   if (request !== sequenceRequest) return;
-  const now = context.currentTime;
+  // Schedule both notes from one confirmed Web Audio clock time so the second
+  // note never fires early if the first gesture had to resume/warm the context.
+  const now = context.currentTime + .03;
   const first = startSample(context, anchorPitch, now, .72, .7);
   const second = startSample(context, secondPitch, now + .78, .72, .82);
   sequenceVoices = [first, second];
