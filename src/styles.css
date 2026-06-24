@@ -16,6 +16,7 @@
 button:disabled{cursor:wait;opacity:.55;transform:none!important}
 @media(max-width:700px){.flat-toggle{right:3%;bottom:6px;padding:6px 8px;font-size:11px}.anchor-label{font-size:10px}}
 .clef{font-size:176px}
+.clef{font-family:'Times New Roman','Segoe UI Symbol','Apple Symbols',serif!important}
 .live-interval-label{font:600 24px 'Fredoka';fill:#8f6380;paint-order:stroke;stroke:#fffaf5;stroke-width:5px;stroke-linejoin:round}
 .student-note-target{cursor:pointer;outline:none}
 .student-note-target:hover,.student-note-target:focus{filter:drop-shadow(0 0 7px rgba(230,111,133,.4))}
