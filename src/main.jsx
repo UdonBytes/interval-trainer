@@ -67,16 +67,43 @@ const LOWERABLE_DEGREES = new Set([1, 2, 4, 5, 6, 8]);
 const FREE_LISTENING_TEXT = 'Free listening mode: choose intervals to start a mystery note.';
 const audioBuffers = new Map();
 const sampleArrayBuffers = new Map();
+const htmlSampleElements = new Map();
 let audioContext;
 let sampleFetchPromise;
 let sampleDecodePromise;
 let previewSource;
 let previewGain;
+let htmlPreviewAudio;
+let htmlPreviewTimeout;
 let previewRequest = 0;
 let sequenceVoices = [];
+let htmlSequenceAudios = [];
+let htmlSequenceTimeouts = [];
 let sequenceRequest = 0;
 let audioWarmPromise;
 let audioWarmed = false;
+
+function useHtmlSamplePlayback() {
+  if (typeof navigator === 'undefined') return false;
+  const ua = navigator.userAgent || '';
+  const isTouchMac = navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1;
+  return /iPad|iPhone|iPod/.test(ua) || isTouchMac;
+}
+
+function getHtmlSampleElement(pitch) {
+  if (!SAMPLE_PITCHES.includes(pitch)) throw new Error(`Missing piano sample file: public/piano/${pitch}.wav`);
+  if (!htmlSampleElements.has(pitch)) {
+    const audio = new Audio(`/piano/${pitch}.wav`);
+    audio.preload = 'auto';
+    audio.playsInline = true;
+    htmlSampleElements.set(pitch, audio);
+  }
+  return htmlSampleElements.get(pitch);
+}
+
+function prepareHtmlSamples() {
+  SAMPLE_PITCHES.forEach((pitch) => getHtmlSampleElement(pitch).load());
+}
 
 function getAudioContext() {
   if (typeof window === 'undefined') throw new Error('Audio is only available in the browser.');
@@ -135,6 +162,15 @@ function stopPreview() {
     previewSource = undefined;
     previewGain = undefined;
   }
+  if (htmlPreviewAudio) {
+    try { htmlPreviewAudio.pause(); } catch { /* already paused */ }
+    try { htmlPreviewAudio.currentTime = 0; } catch { /* ignore seek errors */ }
+    htmlPreviewAudio = undefined;
+  }
+  if (htmlPreviewTimeout) {
+    clearTimeout(htmlPreviewTimeout);
+    htmlPreviewTimeout = undefined;
+  }
 }
 
 function cancelPreview() {
@@ -149,6 +185,13 @@ function stopSequenceSources() {
     gain.disconnect();
   });
   sequenceVoices = [];
+  htmlSequenceTimeouts.forEach((timeout) => clearTimeout(timeout));
+  htmlSequenceTimeouts = [];
+  htmlSequenceAudios.forEach((audio) => {
+    try { audio.pause(); } catch { /* already paused */ }
+    try { audio.currentTime = 0; } catch { /* ignore seek errors */ }
+  });
+  htmlSequenceAudios = [];
 }
 
 function cancelSequence() {
@@ -230,7 +273,63 @@ function startSample(context, pitch, startTime, volume = .72, duration) {
   return { source, gain };
 }
 
+function startHtmlSample(pitch, volume = .72, duration) {
+  const baseAudio = getHtmlSampleElement(pitch);
+  const audio = baseAudio.cloneNode(true);
+  audio.preload = 'auto';
+  audio.playsInline = true;
+  audio.volume = volume;
+  try { audio.currentTime = 0; } catch { /* Safari may reject seeking before metadata */ }
+  const playPromise = audio.play();
+  const timeout = duration
+    ? setTimeout(() => {
+      try { audio.pause(); } catch { /* already stopped */ }
+      try { audio.currentTime = 0; } catch { /* ignore seek errors */ }
+    }, duration * 1000)
+    : undefined;
+  return { audio, playPromise, timeout };
+}
+
+async function playHtmlPreviewSample(pitch) {
+  const request = ++previewRequest;
+  stopPreview();
+  cancelSequence();
+  const voice = startHtmlSample(pitch, .58, .84);
+  htmlPreviewAudio = voice.audio;
+  htmlPreviewTimeout = voice.timeout;
+  try {
+    await voice.playPromise;
+  } catch (error) {
+    if (request === previewRequest) throw error;
+  }
+}
+
+async function playHtmlPair(anchorPitch, secondPitch) {
+  const request = ++sequenceRequest;
+  stopSequenceSources();
+  cancelPreview();
+  const first = startHtmlSample(anchorPitch, .72, .7);
+  htmlSequenceAudios = [first.audio];
+  if (first.timeout) htmlSequenceTimeouts.push(first.timeout);
+  try {
+    await first.playPromise;
+  } catch (error) {
+    if (request === sequenceRequest) throw error;
+  }
+  const secondTimeout = setTimeout(() => {
+    if (request !== sequenceRequest) return;
+    try {
+      const second = startHtmlSample(secondPitch, .72, .82);
+      htmlSequenceAudios.push(second.audio);
+      if (second.timeout) htmlSequenceTimeouts.push(second.timeout);
+      second.playPromise.catch(() => { /* safelyPlay handles the user-triggered first play */ });
+    } catch { /* Missing samples are caught by direct playback paths. */ }
+  }, 780);
+  htmlSequenceTimeouts.push(secondTimeout);
+}
+
 async function playPreviewSample(pitch) {
+  if (useHtmlSamplePlayback()) return playHtmlPreviewSample(pitch);
   const request = ++previewRequest;
   stopPreview();
   cancelSequence();
@@ -245,6 +344,7 @@ async function playPreviewSample(pitch) {
 }
 
 async function playPair(anchorPitch, secondPitch) {
+  if (useHtmlSamplePlayback()) return playHtmlPair(anchorPitch, secondPitch);
   const request = ++sequenceRequest;
   stopSequenceSources();
   cancelPreview();
@@ -455,7 +555,7 @@ function MusicNote({ x, y, accidental, color, draggable, onPointerDown }) {
   </g>;
 }
 
-function SpelledMusicNote({ x, y, accidental, color, draggable, onPointerDown, onTouchStart }) {
+function SpelledMusicNote({ x, y, accidental, color, draggable, onPointerDown }) {
   const baseAccidentalLayout = {
     b: { x: -48, y: 8, size: 45 },
     '#': { x: -49, y: 14, size: 42 },
@@ -467,7 +567,7 @@ function SpelledMusicNote({ x, y, accidental, color, draggable, onPointerDown, o
   const accidentalLayout = draggable
     ? { ...baseAccidentalLayout, x: baseAccidentalLayout.x - 11 }
     : baseAccidentalLayout;
-  return <g className={draggable ? 'drag-note' : ''} onPointerDown={onPointerDown} onTouchStart={onTouchStart}>
+  return <g className={draggable ? 'drag-note' : ''} onPointerDown={onPointerDown}>
     {draggable && <rect x={x - 64} y={y - 52} width="188" height="104" rx="30" fill="transparent" pointerEvents="all" />}
     {accidental && <text x={x + accidentalLayout.x} y={y + accidentalLayout.y} className="accidental" style={{ fontSize: accidentalLayout.size }} fill={color}>{accidentalSymbol(accidental)}</text>}
     <ellipse cx={x} cy={y} rx="18.5" ry="13.2" transform={`rotate(-14 ${x} ${y})`} fill={color} />
@@ -476,6 +576,7 @@ function SpelledMusicNote({ x, y, accidental, color, draggable, onPointerDown, o
 
 function Staff({ anchorPitch, naturalPitches, guess, flatOn, setGuess, playCue, playAnchor, playStudent, answer, showingAnswer, audioReady }) {
   const svgRef = useRef(null);
+  const studentTargetRef = useRef(null);
   const dragging = useRef(false);
   const dragMoved = useRef(false);
   const dragLastClientY = useRef(0);
@@ -542,10 +643,33 @@ function Staff({ anchorPitch, naturalPitches, guess, flatOn, setGuess, playCue, 
     dragging.current = false;
     activeTouchId.current = null;
   };
+  useEffect(() => {
+    const studentTarget = studentTargetRef.current;
+    if (!studentTarget) return undefined;
+    const startTouchDrag = (event) => {
+      if (!audioReady) return;
+      const touch = event.changedTouches?.[0];
+      if (!touch) return;
+      event.preventDefault();
+      activeTouchId.current = touch.identifier;
+      beginDrag(touch.clientY);
+    };
+    const moveTouchDrag = (event) => updateFromTouch(event);
+    const finishTouchDrag = (event) => endTouchDrag(event);
+    studentTarget.addEventListener('touchstart', startTouchDrag, { passive: false });
+    window.addEventListener('touchmove', moveTouchDrag, { passive: false });
+    window.addEventListener('touchend', finishTouchDrag, { passive: false });
+    window.addEventListener('touchcancel', finishTouchDrag, { passive: false });
+    return () => {
+      studentTarget.removeEventListener('touchstart', startTouchDrag);
+      window.removeEventListener('touchmove', moveTouchDrag);
+      window.removeEventListener('touchend', finishTouchDrag);
+      window.removeEventListener('touchcancel', finishTouchDrag);
+    };
+  });
   return <div className="staff-wrap"><svg ref={svgRef} className="staff" viewBox={`0 0 720 ${STAFF_VIEWBOX_HEIGHT}`}
     onPointerMove={updateFromPointer} onPointerUp={() => { dragging.current = false; }}
     onPointerLeave={() => { dragging.current = false; }}
-    onTouchMove={updateFromTouch} onTouchEnd={endTouchDrag} onTouchCancel={endTouchDrag}
     aria-label={`Treble staff with anchor ${anchorPitch} and your movable note`}>
     <defs><filter id="shadow" x="-30%" y="-30%" width="160%" height="160%"><feDropShadow dx="0" dy="4" stdDeviation="3" floodColor="#8b5e83" floodOpacity=".18" /></filter></defs>
     {[190, 160, 130, 100, 70].map((y) => <line key={y} x1="82" x2="670" y1={y} y2={y} className="staff-line" />)}
@@ -560,22 +684,15 @@ function Staff({ anchorPitch, naturalPitches, guess, flatOn, setGuess, playCue, 
     <text x="207" y="292" className="note-label anchor-label">tap to hear {anchorName}</text>
     {showingAnswer && <g opacity=".32"><LedgerLines x={ANSWER_NOTE_X} pitch={answer.staffPitch} className="answer-ledger" /><SpelledMusicNote x={ANSWER_NOTE_X} y={pitchToStaffY(answer.staffPitch)} accidental={answer.accidental} color="#22a06b" /></g>}
     <LedgerLines x={STUDENT_NOTE_X} pitch={guess} className="student-ledger" />
-    <g filter="url(#shadow)" className="student-note-target" role="button" tabIndex="0" aria-label={`Hear student note ${displayName}`}
+    <g ref={studentTargetRef} filter="url(#shadow)" className="student-note-target" role="button" tabIndex="0" aria-label={`Hear student note ${displayName}`}
       onClick={() => { if (audioReady && !dragMoved.current) playStudent(); dragMoved.current = false; }}
       onKeyDown={(event) => { if (audioReady && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); playStudent(); } }}>
       <SpelledMusicNote x={STUDENT_NOTE_X} y={pitchToStaffY(guess)} accidental={displaySpelling.accidental} color="#e66f85" draggable
         onPointerDown={(event) => {
           if (!audioReady) return;
+          if (event.pointerType === 'touch') return;
           beginDrag(event.clientY);
           try { event.currentTarget.setPointerCapture?.(event.pointerId); } catch { /* iOS/SVG may not support capture reliably */ }
-        }}
-        onTouchStart={(event) => {
-          if (!audioReady) return;
-          const touch = event.changedTouches[0];
-          if (!touch) return;
-          event.preventDefault();
-          activeTouchId.current = touch.identifier;
-          beginDrag(touch.clientY);
         }} />
     </g>
     <text x="432" y="292" className="note-label your-note">your note · {displayName}</text>
@@ -703,11 +820,14 @@ function App() {
   };
   useEffect(() => {
     fetchPianoSamples()
-      .then(() => setSampleFilesReady(true))
+      .then(() => {
+        prepareHtmlSamples();
+        setSampleFilesReady(true);
+      })
       .catch((error) => setSampleError(error.message));
   }, []);
   useEffect(() => {
-    if (!sampleFilesReady || audioReady) return undefined;
+    if (useHtmlSamplePlayback() || !sampleFilesReady || audioReady) return undefined;
     let cancelled = false;
     const primeAudioFromGesture = () => {
       unlockAudio()
