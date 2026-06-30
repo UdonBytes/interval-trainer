@@ -78,6 +78,12 @@ let sequenceRequest = 0;
 let audioWarmPromise;
 let audioWarmed = false;
 
+function isIOSOrIPadOS() {
+  if (typeof navigator === 'undefined') return false;
+  const ua = navigator.userAgent || '';
+  return /iPad|iPhone|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+}
+
 function getAudioContext() {
   if (typeof window === 'undefined') throw new Error('Audio is only available in the browser.');
   const AudioContextClass = window.AudioContext || window.webkitAudioContext;
@@ -163,8 +169,18 @@ function stopAllAudio() {
 
 async function unlockAudio() {
   const context = getAudioContext();
+  if (!isIOSOrIPadOS()) {
+    // Original Android/Desktop path: samples are decoded on page load, and
+    // resume starts immediately inside the user's normal Play/drag/click action.
+    const resume = context.state === 'suspended' ? context.resume() : Promise.resolve();
+    await Promise.all([preloadPianoSamples(), resume]);
+    if (context.state !== 'running') await context.resume();
+    await warmAudioContext(context);
+    return context;
+  }
+
   // Start resume immediately inside the tap/drag gesture. Awaiting anything
-  // before resume can burn the mobile user-activation token, especially Android.
+  // before resume can burn the iOS/iPadOS user-activation token.
   const preResumeWarmup = warmAudioContext(context);
   if (context.state === 'suspended') {
     await context.resume();
@@ -717,12 +733,21 @@ function App() {
     safelyPlay(() => playPreviewSample(nextAnchor));
   };
   useEffect(() => {
+    if (isIOSOrIPadOS()) {
+      fetchPianoSamples()
+        .then(() => setSampleFilesReady(true))
+        .catch((error) => setSampleError(error.message));
+      return;
+    }
     preloadPianoSamples()
-      .then(() => setSampleFilesReady(true))
+      .then(() => {
+        setSampleFilesReady(true);
+        setAudioReady(true);
+      })
       .catch((error) => setSampleError(error.message));
   }, []);
   useEffect(() => {
-    if (!sampleFilesReady || audioReady) return undefined;
+    if (!isIOSOrIPadOS() || !sampleFilesReady || audioReady) return undefined;
     let cancelled = false;
     const primeAudioFromGesture = () => {
       unlockAudio()
