@@ -427,14 +427,24 @@ function SpelledMusicNote({ x, y, accidental, color, draggable }) {
 
 function Staff({ anchorPitch, naturalPitches, guess, flatOn, setGuess, playCue, playAnchor, playStudent, answer, showingAnswer, audioReady }) {
   const svgRef = useRef(null);
+  const studentTargetRef = useRef(null);
   const dragging = useRef(false);
   const dragMoved = useRef(false);
   const dragLastClientY = useRef(0);
   const dragPitchIndex = useRef(0);
+  const lastTouchStartAt = useRef(0);
   const displaySpelling = spellingForSelection(anchorPitch, guess, flatOn);
   const displayName = displaySpelling.label;
   const anchorName = pitchLabel(anchorPitch);
   const liveIntervalName = intervalNameForSelection(anchorPitch, guess, flatOn);
+  const startStudentInteraction = (clientY) => {
+    if (!audioReady) return;
+    dragMoved.current = true;
+    dragging.current = true;
+    dragLastClientY.current = clientY;
+    dragPitchIndex.current = Math.max(0, naturalPitches.indexOf(guess));
+    playStudent();
+  };
   const updateFromPointer = (event) => {
     if (!dragging.current || !svgRef.current) return;
     const rect = svgRef.current.getBoundingClientRect();
@@ -468,6 +478,19 @@ function Staff({ anchorPitch, naturalPitches, guess, flatOn, setGuess, playCue, 
       playCue(spellingForSelection(anchorPitch, next, false).samplePitch);
     }
   };
+  useEffect(() => {
+    const target = studentTargetRef.current;
+    if (!target) return undefined;
+    const handleTouchStart = (event) => {
+      if (!audioReady) return;
+      const touch = event.changedTouches?.[0];
+      if (!touch) return;
+      lastTouchStartAt.current = Date.now();
+      startStudentInteraction(touch.clientY);
+    };
+    target.addEventListener('touchstart', handleTouchStart, { passive: true });
+    return () => target.removeEventListener('touchstart', handleTouchStart);
+  });
   return <div className="staff-wrap"><svg ref={svgRef} className="staff" viewBox={`0 0 720 ${STAFF_VIEWBOX_HEIGHT}`}
     onPointerMove={updateFromPointer} onPointerUp={() => { dragging.current = false; }}
     onPointerLeave={() => { dragging.current = false; }} aria-label={`Treble staff with anchor ${anchorPitch} and your movable note`}>
@@ -484,14 +507,11 @@ function Staff({ anchorPitch, naturalPitches, guess, flatOn, setGuess, playCue, 
     <text x="207" y="292" className="note-label anchor-label">tap to hear {anchorName}</text>
     {showingAnswer && <g opacity=".32"><LedgerLines x={ANSWER_NOTE_X} pitch={answer.staffPitch} className="answer-ledger" /><SpelledMusicNote x={ANSWER_NOTE_X} y={pitchToStaffY(answer.staffPitch)} accidental={answer.accidental} color="#22a06b" /></g>}
     <LedgerLines x={STUDENT_NOTE_X} pitch={guess} className="student-ledger" />
-    <g filter="url(#shadow)" className="student-note-target" role="button" tabIndex="0" aria-label={`Hear student note ${displayName}`}
+    <g ref={studentTargetRef} filter="url(#shadow)" className="student-note-target" role="button" tabIndex="0" aria-label={`Hear student note ${displayName}`}
       onPointerDown={(event) => {
         if (!audioReady) return;
-        dragMoved.current = true;
-        dragging.current = true;
-        dragLastClientY.current = event.clientY;
-        dragPitchIndex.current = Math.max(0, naturalPitches.indexOf(guess));
-        playStudent();
+        if (event.pointerType === 'touch' && Date.now() - lastTouchStartAt.current < 700) return;
+        startStudentInteraction(event.clientY);
         event.currentTarget.setPointerCapture?.(event.pointerId);
       }}
       onClick={() => { if (audioReady && !dragMoved.current) playStudent(); dragMoved.current = false; }}
