@@ -185,7 +185,28 @@ async function playPreviewSample(pitch) {
   const request = ++previewRequest;
   stopPreview();
   cancelSequence();
-  const context = await unlockAudio();
+  const context = getAudioContext();
+  const resume = context.state === 'suspended' ? context.resume() : Promise.resolve();
+
+  // Preview taps/drags are latency-sensitive. When samples are already decoded,
+  // schedule the real piano buffer immediately inside the pointer gesture instead
+  // of waiting for unlock/warmup promises to resolve first.
+  if (audioBuffers.has(pitch)) {
+    const voice = startSample(context, pitch, context.currentTime + .01, .58, .84);
+    previewSource = voice.source;
+    previewGain = voice.gain;
+    previewSource.onended = () => {
+      if (previewSource === voice.source) stopPreview();
+    };
+    await resume;
+    if (context.state === 'running') warmAudioContext(context).catch(() => {});
+    return;
+  }
+
+  await Promise.all([preloadPianoSamples(), resume]);
+  if (context.state !== 'running') await context.resume();
+  if (request !== previewRequest) return;
+  await warmAudioContext(context);
   if (request !== previewRequest) return;
   const voice = startSample(context, pitch, context.currentTime + .01, .58, .84);
   previewSource = voice.source;
