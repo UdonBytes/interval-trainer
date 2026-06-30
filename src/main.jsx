@@ -67,43 +67,16 @@ const LOWERABLE_DEGREES = new Set([1, 2, 4, 5, 6, 8]);
 const FREE_LISTENING_TEXT = 'Free listening mode: choose intervals to start a mystery note.';
 const audioBuffers = new Map();
 const sampleArrayBuffers = new Map();
-const htmlSampleElements = new Map();
 let audioContext;
 let sampleFetchPromise;
 let sampleDecodePromise;
 let previewSource;
 let previewGain;
-let htmlPreviewAudio;
-let htmlPreviewTimeout;
 let previewRequest = 0;
 let sequenceVoices = [];
-let htmlSequenceAudios = [];
-let htmlSequenceTimeouts = [];
 let sequenceRequest = 0;
 let audioWarmPromise;
 let audioWarmed = false;
-
-function useHtmlSamplePlayback() {
-  if (typeof navigator === 'undefined') return false;
-  const ua = navigator.userAgent || '';
-  const isTouchMac = navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1;
-  return /iPad|iPhone|iPod/.test(ua) || isTouchMac;
-}
-
-function getHtmlSampleElement(pitch) {
-  if (!SAMPLE_PITCHES.includes(pitch)) throw new Error(`Missing piano sample file: public/piano/${pitch}.wav`);
-  if (!htmlSampleElements.has(pitch)) {
-    const audio = new Audio(`/piano/${pitch}.wav`);
-    audio.preload = 'auto';
-    audio.playsInline = true;
-    htmlSampleElements.set(pitch, audio);
-  }
-  return htmlSampleElements.get(pitch);
-}
-
-function prepareHtmlSamples() {
-  SAMPLE_PITCHES.forEach((pitch) => getHtmlSampleElement(pitch).load());
-}
 
 function getAudioContext() {
   if (typeof window === 'undefined') throw new Error('Audio is only available in the browser.');
@@ -162,15 +135,6 @@ function stopPreview() {
     previewSource = undefined;
     previewGain = undefined;
   }
-  if (htmlPreviewAudio) {
-    try { htmlPreviewAudio.pause(); } catch { /* already paused */ }
-    try { htmlPreviewAudio.currentTime = 0; } catch { /* ignore seek errors */ }
-    htmlPreviewAudio = undefined;
-  }
-  if (htmlPreviewTimeout) {
-    clearTimeout(htmlPreviewTimeout);
-    htmlPreviewTimeout = undefined;
-  }
 }
 
 function cancelPreview() {
@@ -185,13 +149,6 @@ function stopSequenceSources() {
     gain.disconnect();
   });
   sequenceVoices = [];
-  htmlSequenceTimeouts.forEach((timeout) => clearTimeout(timeout));
-  htmlSequenceTimeouts = [];
-  htmlSequenceAudios.forEach((audio) => {
-    try { audio.pause(); } catch { /* already paused */ }
-    try { audio.currentTime = 0; } catch { /* ignore seek errors */ }
-  });
-  htmlSequenceAudios = [];
 }
 
 function cancelSequence() {
@@ -206,19 +163,17 @@ function stopAllAudio() {
 
 async function unlockAudio() {
   const context = getAudioContext();
-  // On iOS Safari, the resume + silent warmup need to be started directly from
-  // a tap/click. Decode samples after that so the real first note is not eaten.
-  const warmup = warmAudioContext(context);
+  // Start resume immediately inside the tap/drag gesture. Awaiting anything
+  // before resume can burn the mobile user-activation token, especially Android.
+  const preResumeWarmup = warmAudioContext(context);
   if (context.state === 'suspended') {
-    await Promise.race([
-      context.resume(),
-      new Promise((_, reject) => setTimeout(() => reject(Object.assign(new Error('Tap Play or a note once more so Safari can start the piano.'), { name: 'NotAllowedError' })), 1400)),
-    ]);
+    await context.resume();
   }
   if (context.state !== 'running') {
-    throw Object.assign(new Error('Tap Play or a note once more so Safari can start the piano.'), { name: 'NotAllowedError' });
+    throw Object.assign(new Error('Tap Play or a note once more so this browser can start the piano.'), { name: 'NotAllowedError' });
   }
-  await warmup;
+  await preResumeWarmup;
+  if (!audioWarmed) await warmAudioContext(context);
   await preloadPianoSamples();
   return context;
 }
@@ -237,7 +192,7 @@ function warmAudioContext(context) {
       clearTimeout(fallback);
       try { source.disconnect(); } catch { /* already disconnected */ }
       try { gain.disconnect(); } catch { /* already disconnected */ }
-      audioWarmed = true;
+      audioWarmed = context.state === 'running';
       audioWarmPromise = undefined;
       resolve();
     };
@@ -273,63 +228,7 @@ function startSample(context, pitch, startTime, volume = .72, duration) {
   return { source, gain };
 }
 
-function startHtmlSample(pitch, volume = .72, duration) {
-  const baseAudio = getHtmlSampleElement(pitch);
-  const audio = baseAudio.cloneNode(true);
-  audio.preload = 'auto';
-  audio.playsInline = true;
-  audio.volume = volume;
-  try { audio.currentTime = 0; } catch { /* Safari may reject seeking before metadata */ }
-  const playPromise = audio.play();
-  const timeout = duration
-    ? setTimeout(() => {
-      try { audio.pause(); } catch { /* already stopped */ }
-      try { audio.currentTime = 0; } catch { /* ignore seek errors */ }
-    }, duration * 1000)
-    : undefined;
-  return { audio, playPromise, timeout };
-}
-
-async function playHtmlPreviewSample(pitch) {
-  const request = ++previewRequest;
-  stopPreview();
-  cancelSequence();
-  const voice = startHtmlSample(pitch, .58, .84);
-  htmlPreviewAudio = voice.audio;
-  htmlPreviewTimeout = voice.timeout;
-  try {
-    await voice.playPromise;
-  } catch (error) {
-    if (request === previewRequest) throw error;
-  }
-}
-
-async function playHtmlPair(anchorPitch, secondPitch) {
-  const request = ++sequenceRequest;
-  stopSequenceSources();
-  cancelPreview();
-  const first = startHtmlSample(anchorPitch, .72, .7);
-  htmlSequenceAudios = [first.audio];
-  if (first.timeout) htmlSequenceTimeouts.push(first.timeout);
-  try {
-    await first.playPromise;
-  } catch (error) {
-    if (request === sequenceRequest) throw error;
-  }
-  const secondTimeout = setTimeout(() => {
-    if (request !== sequenceRequest) return;
-    try {
-      const second = startHtmlSample(secondPitch, .72, .82);
-      htmlSequenceAudios.push(second.audio);
-      if (second.timeout) htmlSequenceTimeouts.push(second.timeout);
-      second.playPromise.catch(() => { /* safelyPlay handles the user-triggered first play */ });
-    } catch { /* Missing samples are caught by direct playback paths. */ }
-  }, 780);
-  htmlSequenceTimeouts.push(secondTimeout);
-}
-
 async function playPreviewSample(pitch) {
-  if (useHtmlSamplePlayback()) return playHtmlPreviewSample(pitch);
   const request = ++previewRequest;
   stopPreview();
   cancelSequence();
@@ -344,7 +243,6 @@ async function playPreviewSample(pitch) {
 }
 
 async function playPair(anchorPitch, secondPitch) {
-  if (useHtmlSamplePlayback()) return playHtmlPair(anchorPitch, secondPitch);
   const request = ++sequenceRequest;
   stopSequenceSources();
   cancelPreview();
@@ -734,7 +632,7 @@ function App() {
     catch (error) {
       setAudioReady(false);
       setSampleError(error.name === 'NotAllowedError'
-        ? 'Tap Play or a note once more so Safari can start the piano.'
+        ? 'Tap Play or a note once more so this browser can start the piano.'
         : error.message);
     }
   };
@@ -819,15 +717,12 @@ function App() {
     safelyPlay(() => playPreviewSample(nextAnchor));
   };
   useEffect(() => {
-    fetchPianoSamples()
-      .then(() => {
-        prepareHtmlSamples();
-        setSampleFilesReady(true);
-      })
+    preloadPianoSamples()
+      .then(() => setSampleFilesReady(true))
       .catch((error) => setSampleError(error.message));
   }, []);
   useEffect(() => {
-    if (useHtmlSamplePlayback() || !sampleFilesReady || audioReady) return undefined;
+    if (!sampleFilesReady || audioReady) return undefined;
     let cancelled = false;
     const primeAudioFromGesture = () => {
       unlockAudio()
@@ -836,11 +731,15 @@ function App() {
     };
     window.addEventListener('pointerdown', primeAudioFromGesture, { capture: true, once: true });
     window.addEventListener('touchstart', primeAudioFromGesture, { capture: true, once: true, passive: true });
+    window.addEventListener('touchend', primeAudioFromGesture, { capture: true, once: true, passive: true });
+    window.addEventListener('click', primeAudioFromGesture, { capture: true, once: true });
     window.addEventListener('keydown', primeAudioFromGesture, { capture: true, once: true });
     return () => {
       cancelled = true;
       window.removeEventListener('pointerdown', primeAudioFromGesture, { capture: true });
       window.removeEventListener('touchstart', primeAudioFromGesture, { capture: true });
+      window.removeEventListener('touchend', primeAudioFromGesture, { capture: true });
+      window.removeEventListener('click', primeAudioFromGesture, { capture: true });
       window.removeEventListener('keydown', primeAudioFromGesture, { capture: true });
     };
   }, [sampleFilesReady, audioReady]);
