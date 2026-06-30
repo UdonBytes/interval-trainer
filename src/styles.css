@@ -20,7 +20,6 @@ button:disabled{cursor:wait;opacity:.55;transform:none!important}
 .clef{font-family:"StaffClefs","Segoe UI Symbol","Times New Roman",Georgia,serif!important;font-weight:400;font-synthesis:none}
 .live-interval-label{font:600 24px 'Fredoka';fill:#8f6380;paint-order:stroke;stroke:#fffaf5;stroke-width:5px;stroke-linejoin:round}
 .student-note-target{cursor:pointer;outline:none}
-.student-note-target,.drag-note{touch-action:none;-webkit-user-select:none;user-select:none}
 .student-note-target:hover,.student-note-target:focus{filter:drop-shadow(0 0 7px rgba(230,111,133,.4))}
 .anchor-ledger{stroke:#65558f}
 .student-ledger{stroke:#e66f85}

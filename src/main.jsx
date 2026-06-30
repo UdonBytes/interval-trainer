@@ -66,10 +66,8 @@ const INTERVAL_TARGETS = {
 const LOWERABLE_DEGREES = new Set([1, 2, 4, 5, 6, 8]);
 const FREE_LISTENING_TEXT = 'Free listening mode: choose intervals to start a mystery note.';
 const audioBuffers = new Map();
-const sampleArrayBuffers = new Map();
 let audioContext;
-let sampleFetchPromise;
-let sampleDecodePromise;
+let sampleLoadingPromise;
 let previewSource;
 let previewGain;
 let previewRequest = 0;
@@ -78,59 +76,25 @@ let sequenceRequest = 0;
 let audioWarmPromise;
 let audioWarmed = false;
 
-function isIOSOrIPadOS() {
-  if (typeof navigator === 'undefined') return false;
-  const ua = navigator.userAgent || '';
-  return /iPad|iPhone|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-}
-
 function getAudioContext() {
-  if (typeof window === 'undefined') throw new Error('Audio is only available in the browser.');
-  const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-  if (!AudioContextClass) throw new Error('This browser does not support Web Audio piano playback.');
-  audioContext ||= new AudioContextClass();
+  audioContext ||= new (window.AudioContext || window.webkitAudioContext)();
   return audioContext;
 }
 
-// Fetch the real piano recordings early, but do not create/decode an AudioContext
-// until a user taps. iOS Safari can block contexts that are created during load.
-function fetchPianoSamples() {
-  if (sampleFetchPromise) return sampleFetchPromise;
-  sampleFetchPromise = Promise.all(SAMPLE_PITCHES.map(async (pitch) => {
+// Fetch and decode each real piano recording once. Dragging only reads these in-memory buffers.
+function preloadPianoSamples() {
+  if (sampleLoadingPromise) return sampleLoadingPromise;
+  const context = getAudioContext();
+  sampleLoadingPromise = Promise.all(SAMPLE_PITCHES.map(async (pitch) => {
     const response = await fetch(`/piano/${pitch}.wav`);
     if (!response.ok) throw new Error(`Missing piano sample file: public/piano/${pitch}.wav`);
-    sampleArrayBuffers.set(pitch, await response.arrayBuffer());
+    try {
+      audioBuffers.set(pitch, await context.decodeAudioData(await response.arrayBuffer()));
+    } catch {
+      throw new Error(`Could not decode piano sample: public/piano/${pitch}.wav`);
+    }
   }));
-  return sampleFetchPromise;
-}
-
-// Decode once after Safari has allowed the AudioContext. Dragging only reads
-// these cached buffers; no sample files are loaded during movement.
-async function decodePianoSamples(context) {
-  if (audioBuffers.size === SAMPLE_PITCHES.length) return;
-  if (sampleDecodePromise) return sampleDecodePromise;
-  sampleDecodePromise = (async () => {
-    await fetchPianoSamples();
-    await Promise.all(SAMPLE_PITCHES.map(async (pitch) => {
-      if (audioBuffers.has(pitch)) return;
-      const arrayBuffer = sampleArrayBuffers.get(pitch);
-      if (!arrayBuffer) throw new Error(`Missing piano sample file: public/piano/${pitch}.wav`);
-      try {
-        // Safari may detach the buffer during decode, so pass a fresh copy.
-        audioBuffers.set(pitch, await context.decodeAudioData(arrayBuffer.slice(0)));
-      } catch {
-        throw new Error(`Could not decode piano sample: public/piano/${pitch}.wav`);
-      }
-    }));
-  })();
-  return sampleDecodePromise;
-}
-
-// Kept as a readable app-level name: all samples are fully ready only after
-// Safari's user-gesture unlock plus decode have completed.
-async function preloadPianoSamples() {
-  const context = getAudioContext();
-  await decodePianoSamples(context);
+  return sampleLoadingPromise;
 }
 
 function stopPreview() {
@@ -169,28 +133,11 @@ function stopAllAudio() {
 
 async function unlockAudio() {
   const context = getAudioContext();
-  if (!isIOSOrIPadOS()) {
-    // Original Android/Desktop path: samples are decoded on page load, and
-    // resume starts immediately inside the user's normal Play/drag/click action.
-    const resume = context.state === 'suspended' ? context.resume() : Promise.resolve();
-    await Promise.all([preloadPianoSamples(), resume]);
-    if (context.state !== 'running') await context.resume();
-    await warmAudioContext(context);
-    return context;
-  }
-
-  // Start resume immediately inside the tap/drag gesture. Awaiting anything
-  // before resume can burn the iOS/iPadOS user-activation token.
-  const preResumeWarmup = warmAudioContext(context);
-  if (context.state === 'suspended') {
-    await context.resume();
-  }
-  if (context.state !== 'running') {
-    throw Object.assign(new Error('Tap Play or a note once more so this browser can start the piano.'), { name: 'NotAllowedError' });
-  }
-  await preResumeWarmup;
-  if (!audioWarmed) await warmAudioContext(context);
-  await preloadPianoSamples();
+  // resume() must begin inside the pointer/key gesture; awaiting preload first loses activation.
+  const resume = context.state === 'suspended' ? context.resume() : Promise.resolve();
+  await Promise.all([preloadPianoSamples(), resume]);
+  if (context.state !== 'running') await context.resume();
+  await warmAudioContext(context);
   return context;
 }
 
@@ -198,31 +145,21 @@ function warmAudioContext(context) {
   if (audioWarmed && context.state === 'running') return Promise.resolve();
   if (audioWarmPromise) return audioWarmPromise;
   audioWarmPromise = new Promise((resolve) => {
-    let finished = false;
     const buffer = context.createBuffer(1, 1, context.sampleRate);
     const source = context.createBufferSource();
     const gain = context.createGain();
-    const finish = () => {
-      if (finished) return;
-      finished = true;
-      clearTimeout(fallback);
-      try { source.disconnect(); } catch { /* already disconnected */ }
-      try { gain.disconnect(); } catch { /* already disconnected */ }
-      audioWarmed = context.state === 'running';
-      audioWarmPromise = undefined;
-      resolve();
-    };
-    const fallback = setTimeout(finish, 120);
     source.buffer = buffer;
     gain.gain.setValueAtTime(0, context.currentTime);
     source.connect(gain).connect(context.destination);
-    source.onended = finish;
-    try {
-      source.start(context.currentTime);
-      source.stop(context.currentTime + .001);
-    } catch {
-      finish();
-    }
+    source.onended = () => {
+      source.disconnect();
+      gain.disconnect();
+      audioWarmed = true;
+      audioWarmPromise = undefined;
+      resolve();
+    };
+    source.start(context.currentTime);
+    source.stop(context.currentTime + .001);
   });
   return audioWarmPromise;
 }
@@ -469,7 +406,7 @@ function MusicNote({ x, y, accidental, color, draggable, onPointerDown }) {
   </g>;
 }
 
-function SpelledMusicNote({ x, y, accidental, color, draggable }) {
+function SpelledMusicNote({ x, y, accidental, color, draggable, onPointerDown }) {
   const baseAccidentalLayout = {
     b: { x: -48, y: 8, size: 45 },
     '#': { x: -49, y: 14, size: 42 },
@@ -481,7 +418,7 @@ function SpelledMusicNote({ x, y, accidental, color, draggable }) {
   const accidentalLayout = draggable
     ? { ...baseAccidentalLayout, x: baseAccidentalLayout.x - 11 }
     : baseAccidentalLayout;
-  return <g className={draggable ? 'drag-note' : ''}>
+  return <g className={draggable ? 'drag-note' : ''} onPointerDown={onPointerDown}>
     {draggable && <rect x={x - 64} y={y - 52} width="188" height="104" rx="30" fill="transparent" pointerEvents="all" />}
     {accidental && <text x={x + accidentalLayout.x} y={y + accidentalLayout.y} className="accidental" style={{ fontSize: accidentalLayout.size }} fill={color}>{accidentalSymbol(accidental)}</text>}
     <ellipse cx={x} cy={y} rx="18.5" ry="13.2" transform={`rotate(-14 ${x} ${y})`} fill={color} />
@@ -490,28 +427,19 @@ function SpelledMusicNote({ x, y, accidental, color, draggable }) {
 
 function Staff({ anchorPitch, naturalPitches, guess, flatOn, setGuess, playCue, playAnchor, playStudent, answer, showingAnswer, audioReady }) {
   const svgRef = useRef(null);
-  const studentTargetRef = useRef(null);
   const dragging = useRef(false);
   const dragMoved = useRef(false);
   const dragLastClientY = useRef(0);
   const dragPitchIndex = useRef(0);
-  const activeTouchId = useRef(null);
   const displaySpelling = spellingForSelection(anchorPitch, guess, flatOn);
   const displayName = displaySpelling.label;
   const anchorName = pitchLabel(anchorPitch);
   const liveIntervalName = intervalNameForSelection(anchorPitch, guess, flatOn);
-  const beginDrag = (clientY) => {
-    if (!audioReady) return;
-    dragMoved.current = true;
-    dragging.current = true;
-    dragLastClientY.current = clientY;
-    dragPitchIndex.current = Math.max(0, naturalPitches.indexOf(guess));
-    playStudent();
-  };
-  const updateDragFromClientY = (clientY, isTouchDrag) => {
+  const updateFromPointer = (event) => {
     if (!dragging.current || !svgRef.current) return;
     const rect = svgRef.current.getBoundingClientRect();
-    const localY = (clientY - rect.top) / rect.height * STAFF_VIEWBOX_HEIGHT;
+    const localY = (event.clientY - rect.top) / rect.height * STAFF_VIEWBOX_HEIGHT;
+    const isTouchDrag = event.pointerType === 'touch' || window.matchMedia?.('(pointer: coarse)').matches;
     const currentIndex = isTouchDrag ? dragPitchIndex.current : naturalPitches.indexOf(guess);
     if (currentIndex < 0) return;
     let nextIndex = currentIndex;
@@ -521,7 +449,7 @@ function Staff({ anchorPitch, naturalPitches, guess, flatOn, setGuess, playCue, 
       // and 9th all have equally usable snap zones.
       const visualStaffStepPx = rect.height / STAFF_VIEWBOX_HEIGHT * STAFF_STEP_Y;
       const stepThresholdPx = Math.max(12, visualStaffStepPx * 1.25);
-      const deltaY = clientY - dragLastClientY.current;
+      const deltaY = event.clientY - dragLastClientY.current;
       if (Math.abs(deltaY) < stepThresholdPx) return;
       nextIndex = currentIndex + (deltaY < 0 ? 1 : -1);
       dragLastClientY.current += (deltaY < 0 ? -stepThresholdPx : stepThresholdPx);
@@ -540,52 +468,9 @@ function Staff({ anchorPitch, naturalPitches, guess, flatOn, setGuess, playCue, 
       playCue(spellingForSelection(anchorPitch, next, false).samplePitch);
     }
   };
-  const updateFromPointer = (event) => {
-    const isTouchDrag = event.pointerType === 'touch' || window.matchMedia?.('(pointer: coarse)').matches;
-    updateDragFromClientY(event.clientY, isTouchDrag);
-  };
-  const updateFromTouch = (event) => {
-    if (!dragging.current) return;
-    const touch = Array.from(event.touches).find((item) => item.identifier === activeTouchId.current) || event.touches[0];
-    if (!touch) return;
-    event.preventDefault();
-    updateDragFromClientY(touch.clientY, true);
-  };
-  const endTouchDrag = (event) => {
-    if (!dragging.current) return;
-    event.preventDefault();
-    dragging.current = false;
-    activeTouchId.current = null;
-  };
-  useEffect(() => {
-    if (!isIOSOrIPadOS()) return undefined;
-    const studentTarget = studentTargetRef.current;
-    if (!studentTarget) return undefined;
-    const startTouchDrag = (event) => {
-      if (!audioReady) return;
-      const touch = event.changedTouches?.[0];
-      if (!touch) return;
-      event.preventDefault();
-      activeTouchId.current = touch.identifier;
-      beginDrag(touch.clientY);
-    };
-    const moveTouchDrag = (event) => updateFromTouch(event);
-    const finishTouchDrag = (event) => endTouchDrag(event);
-    studentTarget.addEventListener('touchstart', startTouchDrag, { passive: false });
-    window.addEventListener('touchmove', moveTouchDrag, { passive: false });
-    window.addEventListener('touchend', finishTouchDrag, { passive: false });
-    window.addEventListener('touchcancel', finishTouchDrag, { passive: false });
-    return () => {
-      studentTarget.removeEventListener('touchstart', startTouchDrag);
-      window.removeEventListener('touchmove', moveTouchDrag);
-      window.removeEventListener('touchend', finishTouchDrag);
-      window.removeEventListener('touchcancel', finishTouchDrag);
-    };
-  });
   return <div className="staff-wrap"><svg ref={svgRef} className="staff" viewBox={`0 0 720 ${STAFF_VIEWBOX_HEIGHT}`}
     onPointerMove={updateFromPointer} onPointerUp={() => { dragging.current = false; }}
-    onPointerLeave={() => { dragging.current = false; }}
-    aria-label={`Treble staff with anchor ${anchorPitch} and your movable note`}>
+    onPointerLeave={() => { dragging.current = false; }} aria-label={`Treble staff with anchor ${anchorPitch} and your movable note`}>
     <defs><filter id="shadow" x="-30%" y="-30%" width="160%" height="160%"><feDropShadow dx="0" dy="4" stdDeviation="3" floodColor="#8b5e83" floodOpacity=".18" /></filter></defs>
     {[190, 160, 130, 100, 70].map((y) => <line key={y} x1="82" x2="670" y1={y} y2={y} className="staff-line" />)}
     <text x="87" y="188" className="clef">𝄞</text>
@@ -599,16 +484,19 @@ function Staff({ anchorPitch, naturalPitches, guess, flatOn, setGuess, playCue, 
     <text x="207" y="292" className="note-label anchor-label">tap to hear {anchorName}</text>
     {showingAnswer && <g opacity=".32"><LedgerLines x={ANSWER_NOTE_X} pitch={answer.staffPitch} className="answer-ledger" /><SpelledMusicNote x={ANSWER_NOTE_X} y={pitchToStaffY(answer.staffPitch)} accidental={answer.accidental} color="#22a06b" /></g>}
     <LedgerLines x={STUDENT_NOTE_X} pitch={guess} className="student-ledger" />
-    <g ref={studentTargetRef} filter="url(#shadow)" className="student-note-target" role="button" tabIndex="0" aria-label={`Hear student note ${displayName}`}
-      onPointerDown={(event) => {
-        if (!audioReady) return;
-        if (event.pointerType === 'touch' && isIOSOrIPadOS()) return;
-        beginDrag(event.clientY);
-        try { event.currentTarget.setPointerCapture?.(event.pointerId); } catch { /* Some SVG targets may not support capture reliably */ }
-      }}
+    <g filter="url(#shadow)" className="student-note-target" role="button" tabIndex="0" aria-label={`Hear student note ${displayName}`}
       onClick={() => { if (audioReady && !dragMoved.current) playStudent(); dragMoved.current = false; }}
       onKeyDown={(event) => { if (audioReady && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); playStudent(); } }}>
-      <SpelledMusicNote x={STUDENT_NOTE_X} y={pitchToStaffY(guess)} accidental={displaySpelling.accidental} color="#e66f85" draggable />
+      <SpelledMusicNote x={STUDENT_NOTE_X} y={pitchToStaffY(guess)} accidental={displaySpelling.accidental} color="#e66f85" draggable
+        onPointerDown={(event) => {
+          if (!audioReady) return;
+          dragMoved.current = true;
+          dragging.current = true;
+          dragLastClientY.current = event.clientY;
+          dragPitchIndex.current = Math.max(0, naturalPitches.indexOf(guess));
+          playStudent();
+          event.currentTarget.setPointerCapture?.(event.pointerId);
+        }} />
     </g>
     <text x="432" y="292" className="note-label your-note">your note · {displayName}</text>
     <text x="588" y="58" className="drag-hint">↕ drag me</text>
@@ -638,18 +526,12 @@ function App() {
   const [feedback, setFeedback] = useState({ kind: 'ready', text: FREE_LISTENING_TEXT });
   const [showingAnswer, setShowingAnswer] = useState(false);
   const [sampleError, setSampleError] = useState('');
-  const [sampleFilesReady, setSampleFilesReady] = useState(false);
   const [audioReady, setAudioReady] = useState(false);
   const safelyPlay = async (playback) => {
-    try {
-      setSampleError('');
-      await playback();
-      setAudioReady(true);
-    }
+    try { setSampleError(''); await playback(); }
     catch (error) {
-      setAudioReady(false);
       setSampleError(error.name === 'NotAllowedError'
-        ? 'Tap Play or a note once more so this browser can start the piano.'
+        ? 'Tap a purple play button once to enable piano audio in this browser.'
         : error.message);
     }
   };
@@ -734,41 +616,10 @@ function App() {
     safelyPlay(() => playPreviewSample(nextAnchor));
   };
   useEffect(() => {
-    if (isIOSOrIPadOS()) {
-      fetchPianoSamples()
-        .then(() => setSampleFilesReady(true))
-        .catch((error) => setSampleError(error.message));
-      return;
-    }
     preloadPianoSamples()
-      .then(() => {
-        setSampleFilesReady(true);
-        setAudioReady(true);
-      })
+      .then(() => setAudioReady(true))
       .catch((error) => setSampleError(error.message));
   }, []);
-  useEffect(() => {
-    if (!isIOSOrIPadOS() || !sampleFilesReady || audioReady) return undefined;
-    let cancelled = false;
-    const primeAudioFromGesture = () => {
-      unlockAudio()
-        .then(() => { if (!cancelled) setAudioReady(true); })
-        .catch(() => { /* The actual Play/note action will show any needed error. */ });
-    };
-    window.addEventListener('pointerdown', primeAudioFromGesture, { capture: true, once: true });
-    window.addEventListener('touchstart', primeAudioFromGesture, { capture: true, once: true, passive: true });
-    window.addEventListener('touchend', primeAudioFromGesture, { capture: true, once: true, passive: true });
-    window.addEventListener('click', primeAudioFromGesture, { capture: true, once: true });
-    window.addEventListener('keydown', primeAudioFromGesture, { capture: true, once: true });
-    return () => {
-      cancelled = true;
-      window.removeEventListener('pointerdown', primeAudioFromGesture, { capture: true });
-      window.removeEventListener('touchstart', primeAudioFromGesture, { capture: true });
-      window.removeEventListener('touchend', primeAudioFromGesture, { capture: true });
-      window.removeEventListener('click', primeAudioFromGesture, { capture: true });
-      window.removeEventListener('keydown', primeAudioFromGesture, { capture: true });
-    };
-  }, [sampleFilesReady, audioReady]);
   useEffect(() => {
     if (!rcmOpen) return undefined;
     const closeFromOutside = (event) => {
@@ -853,9 +704,9 @@ function App() {
           <button className="clear-intervals" type="button" onClick={clearIntervals}>Clear all</button>
           <div className="anchor-stepper" aria-label="Starting note">
             <span>Starting note:</span>
-            <button type="button" disabled={!sampleFilesReady || STARTING_NOTES.indexOf(anchorPitch) === 0} onClick={() => changeAnchor(-1)}>←</button>
+            <button type="button" disabled={!audioReady || STARTING_NOTES.indexOf(anchorPitch) === 0} onClick={() => changeAnchor(-1)}>←</button>
             <b>{anchorPitch}</b>
-            <button type="button" disabled={!sampleFilesReady || STARTING_NOTES.indexOf(anchorPitch) === STARTING_NOTES.length - 1} onClick={() => changeAnchor(1)}>→</button>
+            <button type="button" disabled={!audioReady || STARTING_NOTES.indexOf(anchorPitch) === STARTING_NOTES.length - 1} onClick={() => changeAnchor(1)}>→</button>
           </div>
         </div>
         <div id="interval-options-panel" className={`interval-grid ${intervalPanelOpen ? 'is-open' : ''}`} role="group" aria-label="Choose intervals">
@@ -875,19 +726,19 @@ function App() {
           })}
         </div>
       </div>
-      <div className="listen-row"><div className="step-badge">1</div><div><b>Listen, then find the 2nd note</b><small className="helper-desktop">Start with the regular note. If it sounds a little lower, use Lower this note.</small><small className="helper-mobile">Find the regular note first. Lower if needed.</small></div><button className="primary play" disabled={!sampleFilesReady || !eligible.length} onClick={() => safelyPlay(() => playPair(anchorPitch, answer.samplePitch))}><span>▶</span> Play</button></div>
+      <div className="listen-row"><div className="step-badge">1</div><div><b>Listen, then find the 2nd note</b><small className="helper-desktop">Start with the regular note. If it sounds a little lower, use Lower this note.</small><small className="helper-mobile">Find the regular note first. Lower if needed.</small></div><button className="primary play" disabled={!audioReady || !eligible.length} onClick={() => safelyPlay(() => playPair(anchorPitch, answer.samplePitch))}><span>▶</span> Play</button></div>
       <div className="notation-area" tabIndex="0" onKeyDown={handleKeyDown} aria-label="Natural note ladder. Use up and down arrow keys to move your note.">
         <Staff anchorPitch={anchorPitch} naturalPitches={naturalPitches} guess={guess} flatOn={flatOn} setGuess={chooseNaturalNote} playCue={playCue}
           playAnchor={() => playCue(anchorPitch)} playStudent={() => playCue(spellingForSelection(anchorPitch, guess, flatOn).samplePitch)}
-          answer={answer} showingAnswer={showingAnswer} audioReady={sampleFilesReady} />
-        <button className={`flat-toggle ${flatOn ? 'is-on' : ''}`} disabled={!sampleFilesReady || !canUseFlatToggle()}
+          answer={answer} showingAnswer={showingAnswer} audioReady={audioReady} />
+        <button className={`flat-toggle ${flatOn ? 'is-on' : ''}`} disabled={!audioReady || !canUseFlatToggle()}
           aria-pressed={flatOn} onClick={toggleFlat}>Lower this note</button>
       </div>
-      <div className="feedback" data-kind={sampleError ? 'error' : feedback.kind} aria-live="polite"><span>{sampleError ? '!' : feedback.kind === 'correct' ? '★' : feedback.kind === 'try' ? '♡' : '✦'}</span>{sampleError || (!sampleFilesReady ? 'Loading piano sounds…' : feedback.text)}</div>
+      <div className="feedback" data-kind={sampleError ? 'error' : feedback.kind} aria-live="polite"><span>{sampleError ? '!' : feedback.kind === 'correct' ? '★' : feedback.kind === 'try' ? '♡' : '✦'}</span>{sampleError || (!audioReady ? 'Loading the piano…' : feedback.text)}</div>
       <div className="actions">
-        <button className="soft" disabled={!sampleFilesReady} onClick={() => safelyPlay(() => playPair(anchorPitch, spellingForSelection(anchorPitch, guess, flatOn).samplePitch))}>♪ Hear My Note</button><button className="check" disabled={!sampleFilesReady || !eligible.length} onClick={check}>✓ Check</button>
-        <button className="soft" disabled={!sampleFilesReady || !eligible.length} onClick={() => { setShowingAnswer(true); setFeedback({ kind: 'answer', text: `The answer is ${answer.note} — ${answer.name}. Give it a listen!` }); safelyPlay(() => playPair(anchorPitch, answer.samplePitch)); }}>👀 Show Answer</button>
-        <button className="next" disabled={!sampleFilesReady} onClick={() => eligible.length ? chooseNext() : (resetGuess(), setFeedback({ kind: 'ready', text: FREE_LISTENING_TEXT }))}>Next <span>→</span></button>
+        <button className="soft" disabled={!audioReady} onClick={() => safelyPlay(() => playPair(anchorPitch, spellingForSelection(anchorPitch, guess, flatOn).samplePitch))}>♪ Hear My Note</button><button className="check" disabled={!audioReady || !eligible.length} onClick={check}>✓ Check</button>
+        <button className="soft" disabled={!audioReady || !eligible.length} onClick={() => { setShowingAnswer(true); setFeedback({ kind: 'answer', text: `The answer is ${answer.note} — ${answer.name}. Give it a listen!` }); safelyPlay(() => playPair(anchorPitch, answer.samplePitch)); }}>👀 Show Answer</button>
+        <button className="next" disabled={!audioReady} onClick={() => eligible.length ? chooseNext() : (resetGuess(), setFeedback({ kind: 'ready', text: FREE_LISTENING_TEXT }))}>Next <span>→</span></button>
       </div>
     </section><footer><span className="footer-tip">Tip: you can also use the ↑ ↓ keys.</span><span className="footer-credit">Created by Jane Hong (UdonBytes)</span></footer>
   </main>;
