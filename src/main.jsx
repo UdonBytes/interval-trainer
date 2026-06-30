@@ -469,7 +469,7 @@ function MusicNote({ x, y, accidental, color, draggable, onPointerDown }) {
   </g>;
 }
 
-function SpelledMusicNote({ x, y, accidental, color, draggable, onPointerDown }) {
+function SpelledMusicNote({ x, y, accidental, color, draggable }) {
   const baseAccidentalLayout = {
     b: { x: -48, y: 8, size: 45 },
     '#': { x: -49, y: 14, size: 42 },
@@ -481,7 +481,7 @@ function SpelledMusicNote({ x, y, accidental, color, draggable, onPointerDown })
   const accidentalLayout = draggable
     ? { ...baseAccidentalLayout, x: baseAccidentalLayout.x - 11 }
     : baseAccidentalLayout;
-  return <g className={draggable ? 'drag-note' : ''} onPointerDown={onPointerDown}>
+  return <g className={draggable ? 'drag-note' : ''}>
     {draggable && <rect x={x - 64} y={y - 52} width="188" height="104" rx="30" fill="transparent" pointerEvents="all" />}
     {accidental && <text x={x + accidentalLayout.x} y={y + accidentalLayout.y} className="accidental" style={{ fontSize: accidentalLayout.size }} fill={color}>{accidentalSymbol(accidental)}</text>}
     <ellipse cx={x} cy={y} rx="18.5" ry="13.2" transform={`rotate(-14 ${x} ${y})`} fill={color} />
@@ -600,15 +600,15 @@ function Staff({ anchorPitch, naturalPitches, guess, flatOn, setGuess, playCue, 
     {showingAnswer && <g opacity=".32"><LedgerLines x={ANSWER_NOTE_X} pitch={answer.staffPitch} className="answer-ledger" /><SpelledMusicNote x={ANSWER_NOTE_X} y={pitchToStaffY(answer.staffPitch)} accidental={answer.accidental} color="#22a06b" /></g>}
     <LedgerLines x={STUDENT_NOTE_X} pitch={guess} className="student-ledger" />
     <g ref={studentTargetRef} filter="url(#shadow)" className="student-note-target" role="button" tabIndex="0" aria-label={`Hear student note ${displayName}`}
+      onPointerDown={(event) => {
+        if (!audioReady) return;
+        if (event.pointerType === 'touch' && isIOSOrIPadOS()) return;
+        beginDrag(event.clientY);
+        try { event.currentTarget.setPointerCapture?.(event.pointerId); } catch { /* Some SVG targets may not support capture reliably */ }
+      }}
       onClick={() => { if (audioReady && !dragMoved.current) playStudent(); dragMoved.current = false; }}
       onKeyDown={(event) => { if (audioReady && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); playStudent(); } }}>
-      <SpelledMusicNote x={STUDENT_NOTE_X} y={pitchToStaffY(guess)} accidental={displaySpelling.accidental} color="#e66f85" draggable
-        onPointerDown={(event) => {
-          if (!audioReady) return;
-          if (event.pointerType === 'touch' && isIOSOrIPadOS()) return;
-          beginDrag(event.clientY);
-          try { event.currentTarget.setPointerCapture?.(event.pointerId); } catch { /* iOS/SVG may not support capture reliably */ }
-        }} />
+      <SpelledMusicNote x={STUDENT_NOTE_X} y={pitchToStaffY(guess)} accidental={displaySpelling.accidental} color="#e66f85" draggable />
     </g>
     <text x="432" y="292" className="note-label your-note">your note · {displayName}</text>
     <text x="588" y="58" className="drag-hint">↕ drag me</text>
