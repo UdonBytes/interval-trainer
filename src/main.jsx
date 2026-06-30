@@ -558,6 +558,7 @@ function Staff({ anchorPitch, naturalPitches, guess, flatOn, setGuess, playCue, 
     activeTouchId.current = null;
   };
   useEffect(() => {
+    if (!isIOSOrIPadOS()) return undefined;
     const studentTarget = studentTargetRef.current;
     if (!studentTarget) return undefined;
     const startTouchDrag = (event) => {
@@ -604,7 +605,7 @@ function Staff({ anchorPitch, naturalPitches, guess, flatOn, setGuess, playCue, 
       <SpelledMusicNote x={STUDENT_NOTE_X} y={pitchToStaffY(guess)} accidental={displaySpelling.accidental} color="#e66f85" draggable
         onPointerDown={(event) => {
           if (!audioReady) return;
-          if (event.pointerType === 'touch') return;
+          if (event.pointerType === 'touch' && isIOSOrIPadOS()) return;
           beginDrag(event.clientY);
           try { event.currentTarget.setPointerCapture?.(event.pointerId); } catch { /* iOS/SVG may not support capture reliably */ }
         }} />
