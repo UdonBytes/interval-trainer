@@ -438,7 +438,6 @@ function Staff({ anchorPitch, naturalPitches, guess, flatOn, setGuess, playCue, 
   const anchorName = pitchLabel(anchorPitch);
   const liveIntervalName = intervalNameForSelection(anchorPitch, guess, flatOn);
   const startStudentInteraction = (clientY) => {
-    if (!audioReady) return;
     dragMoved.current = true;
     dragging.current = true;
     dragLastClientY.current = clientY;
@@ -482,13 +481,13 @@ function Staff({ anchorPitch, naturalPitches, guess, flatOn, setGuess, playCue, 
     const target = studentTargetRef.current;
     if (!target) return undefined;
     const handleTouchStart = (event) => {
-      if (!audioReady) return;
       const touch = event.changedTouches?.[0];
       if (!touch) return;
+      event.preventDefault();
       lastTouchStartAt.current = Date.now();
       startStudentInteraction(touch.clientY);
     };
-    target.addEventListener('touchstart', handleTouchStart, { passive: true });
+    target.addEventListener('touchstart', handleTouchStart, { passive: false });
     return () => target.removeEventListener('touchstart', handleTouchStart);
   });
   return <div className="staff-wrap"><svg ref={svgRef} className="staff" viewBox={`0 0 720 ${STAFF_VIEWBOX_HEIGHT}`}
@@ -509,7 +508,6 @@ function Staff({ anchorPitch, naturalPitches, guess, flatOn, setGuess, playCue, 
     <LedgerLines x={STUDENT_NOTE_X} pitch={guess} className="student-ledger" />
     <g ref={studentTargetRef} filter="url(#shadow)" className="student-note-target" role="button" tabIndex="0" aria-label={`Hear student note ${displayName}`}
       onPointerDown={(event) => {
-        if (!audioReady) return;
         if (event.pointerType === 'touch' && Date.now() - lastTouchStartAt.current < 700) return;
         startStudentInteraction(event.clientY);
         event.currentTarget.setPointerCapture?.(event.pointerId);
